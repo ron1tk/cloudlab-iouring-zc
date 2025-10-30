@@ -37,7 +37,6 @@ for i in range(params.nodeCount):
     iface.addAddress(pg.IPv4Address("10.10.1.%d" % (i + 1), "255.255.255.0"))
     lan.addInterface(iface)
 
-    req.addResource(n)
 
 req.addResource(lan)
 pc.printRequestRSpec(req)
