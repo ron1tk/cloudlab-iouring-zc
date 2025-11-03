@@ -13,7 +13,7 @@ pc.defineParameter("nodeType", "Hardware type",
                     ("d6515",     "25G Mellanox")])
 pc.defineParameter("osImage", "OS Image",
                    portal.ParameterType.STRING,
-                   "urn:publicid:IDN+emulab.net+image+emulab-ops//UBUNTU24-64-STD")
+                   "urn:publicid:IDN+utah.cloudlab.us+image+browncs2690fa24-PG0:ubuntu24-6.18rc4-ringbling-zc")
 
 params = pc.bindParameters()
 req = pc.makeRequestRSpec()
