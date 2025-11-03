@@ -2,37 +2,63 @@
 set -euxo pipefail
 
 ROLE="${1:-server}"
-
 export DEBIAN_FRONTEND=noninteractive
+
+# ---------------------------------------------------------------------
+# Base packages
+# ---------------------------------------------------------------------
 apt-get update
 apt-get install -y \
   build-essential git curl pkg-config cmake \
   software-properties-common ca-certificates \
   linux-tools-common linux-tools-generic \
-  ethtool net-tools iperf3 numactl
+  ethtool net-tools iperf3 numactl bc flex bison libelf-dev libssl-dev \
+  dwarves zstd
 
-# Optional: Rust toolchain (uncomment if you’ll build Rust echo/bench)
-# if ! command -v cargo >/dev/null 2>&1; then
-#   curl -sSf https://sh.rustup.rs | sh -s -- -y
-#   . "$HOME/.cargo/env"
-# fi
-
-# liburing (new enough for *_SEND_ZC paths)
+# ---------------------------------------------------------------------
+# Install a mainline 6.17-rc2 kernel for io_uring RECV_ZC
+# ---------------------------------------------------------------------
 cd /tmp
-if [ ! -d liburing ]; then
-  git clone --depth 1 --branch liburing-2.7 https://github.com/axboe/liburing.git
-fi
-cd liburing
-./configure --prefix=/usr
-make -j"$(nproc)"
-make install
-ldconfig
+KVER="6.17-rc2"
 
-# Sysctls (valid ones only)
+if [ ! -d "linux-$KVER" ]; then
+  echo "[*] Downloading Linux $KVER ..."
+  wget -q https://cdn.kernel.org/pub/linux/kernel/v6.x/linux-$KVER.tar.xz
+  tar -xf linux-$KVER.tar.xz
+fi
+
+cd linux-$KVER
+echo "[*] Building kernel $KVER (this can take ~10–15 min) ..."
+make defconfig
+
+# Enable io_uring + network + Mellanox NICs
+scripts/config --enable CONFIG_IO_URING
+scripts/config --enable CONFIG_NET
+scripts/config --enable CONFIG_INET
+scripts/config --enable CONFIG_TCP_ZEROCOPY_RECEIVE
+scripts/config --enable CONFIG_MELLANOX_CORE
+scripts/config --enable CONFIG_MLX5_CORE
+scripts/config --enable CONFIG_MLX5_CORE_EN
+scripts/config --enable CONFIG_BPF
+scripts/config --enable CONFIG_BPF_SYSCALL
+scripts/config --enable CONFIG_EXPERIMENTAL
+
+# Build and install
+make -j"$(nproc)"
+make modules_install
+make install
+
+update-initramfs -c -k "$KVER" || true
+update-grub || true
+grub-set-default 0 || true
+
+echo "[*] Installed new kernel $KVER"
+
+# ---------------------------------------------------------------------
+# Sysctl / system tuning
+# ---------------------------------------------------------------------
 cat >/etc/sysctl.d/99-ringbling.conf <<'EOF'
-# Map count for lots of buffers
 vm.max_map_count = 1048576
-# Network buffers
 net.core.rmem_max = 536870912
 net.core.wmem_max = 536870912
 net.ipv4.tcp_rmem = 4096 87380 536870912
@@ -40,27 +66,31 @@ net.ipv4.tcp_wmem = 4096 65536 536870912
 EOF
 sysctl --system
 
-# Allow large pinned memory for all users (applies at login shells)
 cat >/etc/security/limits.d/99-memlock.conf <<'EOF'
 * soft memlock unlimited
 * hard memlock unlimited
 EOF
 
-# Set performance governor if available
 if command -v cpupower >/dev/null 2>&1; then
   cpupower frequency-set -g performance || true
 fi
 
-# Find the experiment iface (the one with 10.10.1.x)
+# ---------------------------------------------------------------------
+# Configure experiment network
+# ---------------------------------------------------------------------
 EXP_IFACE="$(ip -o -4 addr show | awk '/10\.10\.1\./{print $2; exit}')"
 if [ -n "${EXP_IFACE:-}" ]; then
   ip link set "$EXP_IFACE" mtu 9000 || true
   ethtool -K "$EXP_IFACE" gro off lro off tso off gso off || true
 fi
 
-# Print quick info
 echo "ROLE=$ROLE"
-uname -r
+uname -r || true
 ip -o -4 addr show
 
-# No reboot needed on Ubuntu 24 (already 6.8+)
+# ---------------------------------------------------------------------
+# Reboot into new kernel
+# ---------------------------------------------------------------------
+echo "[*] Rebooting into kernel $KVER ..."
+sleep 3
+reboot
